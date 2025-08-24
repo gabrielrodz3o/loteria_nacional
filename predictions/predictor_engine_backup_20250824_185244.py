@@ -411,10 +411,10 @@ class OptimizedPredictorEngine:
             return None
     
     def generar_predicciones_diarias(self, fecha: str, tipo_loteria_id: int) -> Dict[str, List[Dict]]:
-        """Generate daily predictions with FORCED DIVERSITY - SUPER FIX."""
+        """Generate daily predictions with optimized processing."""
         try:
             fecha_obj = datetime.strptime(fecha, '%Y-%m-%d').date()
-            logger.info(f"[PREDICT] Generating DIVERSE predictions for {fecha} - lottery type {tipo_loteria_id}")
+            logger.info(f"[PREDICT] Generating predictions for {fecha} - lottery type {tipo_loteria_id}")
             
             # Initialize models if needed
             self._initialize_models()
@@ -431,11 +431,7 @@ class OptimizedPredictorEngine:
             
             predictions = {}
             
-            # Lista de modelos para forzar diversidad
-            model_names = list(self.models.keys())
-            logger.info(f"[PREDICT] Available models for diversity: {model_names}")
-            
-            # Generate predictions for each game type with FORCED DIVERSITY
+            # Generate predictions for each game type
             for game_type in ['quiniela', 'pale', 'tripleta']:
                 X, _ = all_game_data[game_type]
                 
@@ -444,146 +440,76 @@ class OptimizedPredictorEngine:
                     predictions[game_type] = self._generate_fallback_game_predictions(game_type)
                     continue
                 
-                logger.info(f"[PREDICT] Generating DIVERSE {game_type} predictions")
+                logger.info(f"[PREDICT] Generating {game_type} predictions with {len(self.models)} models")
                 
-                # FORZAR DIVERSIDAD: Usar diferentes modelos para cada posición
-                game_predictions = []
+                # Collect predictions from all available models
+                model_predictions = []
+                successful_models = 0
                 
-                for posicion in range(3):  # P1, P2, P3
-                    # Seleccionar modelo específico para cada posición
-                    if posicion < len(model_names):
-                        selected_model_name = model_names[posicion]
-                    else:
-                        selected_model_name = model_names[posicion % len(model_names)]
-                    
-                    logger.info(f"[PREDICT] Using model {selected_model_name} for P{posicion+1}")
-                    
+                for model_name in self.models.keys():
                     try:
-                        # Cargar modelo específico
-                        cached_model = self._load_cached_model(selected_model_name, tipo_loteria_id, game_type, fecha_obj)
+                        logger.info(f"[PREDICT] Trying model {model_name} for {game_type}")
                         
-                        if not cached_model:
-                            # Crear y entrenar modelo en tiempo real
-                            from models.prediction_models import model_registry
-                            cached_model = model_registry.create_model(selected_model_name)
-                            
-                            if cached_model and len(X) >= 10:
-                                cached_model.fit(X, X)  # Entrenar rápido
-                                logger.info(f"[PREDICT] Trained {selected_model_name} in real-time")
+                        # Try to load cached trained model
+                        cached_model = self._load_cached_model(model_name, tipo_loteria_id, game_type, fecha_obj)
                         
                         if cached_model:
-                            # Generar predicción específica
-                            model_predictions = self._generate_single_model_predictions(cached_model, X, game_type, 1)
-                            
-                            if model_predictions:
-                                pred = model_predictions[0]
-                                
-                                # FORZAR que el método sea correcto
-                                pred_dict = {
-                                    'posicion': posicion + 1,
-                                    'probabilidad': pred.get('probability', 0.01),
-                                    'metodo_generacion': selected_model_name,  # FORZAR MÉTODO ESPECÍFICO
-                                    'score_confianza': pred.get('confidence', 0.1)
-                                }
-                                
-                                # Manejar números según tipo de juego
-                                if game_type == 'quiniela':
-                                    pred_dict['numero'] = pred['numbers'][0] if pred['numbers'] else np.random.randint(0, 100)
-                                else:
-                                    pred_dict['numeros'] = pred['numbers'] if pred['numbers'] else self._generate_random_combination(game_type)
-                                
-                                game_predictions.append(pred_dict)
-                                logger.info(f"[PREDICT] P{posicion+1} from {selected_model_name}: {pred_dict.get('numero', pred_dict.get('numeros'))}")
+                            logger.info(f"[PREDICT] Loaded cached model {model_name}")
+                            pred = self._generate_single_model_predictions(cached_model, X, game_type)
+                            if pred:
+                                model_predictions.extend(pred)
+                                successful_models += 1
+                                logger.info(f"[PREDICT] Got {len(pred)} predictions from {model_name}")
                             else:
-                                # Fallback específico
-                                fallback_pred = self._create_fallback_prediction(posicion + 1, game_type, selected_model_name)
-                                game_predictions.append(fallback_pred)
+                                logger.warning(f"[PREDICT] No predictions from {model_name}")
                         else:
-                            # Fallback específico
-                            fallback_pred = self._create_fallback_prediction(posicion + 1, game_type, selected_model_name)
-                            game_predictions.append(fallback_pred)
+                            logger.warning(f"[PREDICT] No cached model found for {model_name}")
                             
                     except Exception as e:
-                        logger.warning(f"[PREDICT] Error with {selected_model_name}: {e}")
-                        fallback_pred = self._create_fallback_prediction(posicion + 1, game_type, selected_model_name)
-                        game_predictions.append(fallback_pred)
+                        logger.warning(f"[PREDICT] Prediction failed for {model_name} on {game_type}: {e}")
                 
-                predictions[game_type] = game_predictions
-                logger.info(f"[PREDICT] Generated {len(game_predictions)} DIVERSE predictions for {game_type}")
+                logger.info(f"[PREDICT] Got predictions from {successful_models}/{len(self.models)} models for {game_type}")
                 
-                # Verificar diversidad
-                methods_used = [pred.get('metodo_generacion', 'unknown') for pred in game_predictions]
-                logger.info(f"[PREDICT] Methods used for {game_type}: {methods_used}")
+                # Select best predictions
+                if model_predictions:
+                    best_predictions = self._select_best_predictions(model_predictions, game_type, n_final=3)
+                    predictions[game_type] = [pred.to_dict() for pred in best_predictions]
+                    
+                    # CORRECCIÓN: Verificar que el método se preserve
+                    for i, pred_dict in enumerate(predictions[game_type]):
+                        if 'metodo_generacion' not in pred_dict or pred_dict['metodo_generacion'] == 'unknown':
+                            # Intentar recuperar del objeto original
+                            if i < len(best_predictions):
+                                pred_dict['metodo_generacion'] = best_predictions[i].metodo_generacion
+                            logger.warning(f"[PREDICT] Fixed missing method for prediction {i+1}: {pred_dict['metodo_generacion']}")
+                    
+                    logger.info(f"[PREDICT] Generated {len(predictions[game_type])} final predictions for {game_type}")
+                else:
+                    logger.warning(f"[PREDICT] No model predictions available for {game_type}, using fallback")
+                    predictions[game_type] = self._generate_fallback_game_predictions(game_type)
             
-            logger.info("[PREDICT] DIVERSE daily predictions generated successfully")
+            logger.info("[PREDICT] Daily predictions generated successfully")
             return predictions
             
         except Exception as e:
-            logger.error(f"[PREDICT] DIVERSE prediction generation failed: {e}", exc_info=True)
+            logger.error(f"[PREDICT] Prediction generation failed: {e}", exc_info=True)
             return self._generate_fallback_predictions()
     
-    def _generate_random_combination(self, game_type: str) -> List[int]:
-        """Generate random combination for game type."""
-        if game_type == 'pale':
-            return list(np.random.choice(100, 2, replace=False))
-        elif game_type == 'tripleta':
-            return list(np.random.choice(100, 3, replace=False))
-        return [np.random.randint(0, 100)]
-    
-    def _create_fallback_prediction(self, posicion: int, game_type: str, method_name: str) -> Dict:
-        """Create fallback prediction with specific method."""
-        pred = {
-            'posicion': posicion,
-            'probabilidad': 0.01 + np.random.random() * 0.05,
-            'metodo_generacion': method_name,  # MANTENER MÉTODO ESPECÍFICO
-            'score_confianza': 0.1 + np.random.random() * 0.1
-        }
-        
-        if game_type == 'quiniela':
-            pred['numero'] = np.random.randint(0, 100)
-        elif game_type == 'pale':
-            pred['numeros'] = list(np.random.choice(100, 2, replace=False))
-        elif game_type == 'tripleta':
-            pred['numeros'] = list(np.random.choice(100, 3, replace=False))
-        
-        return pred
     def _generate_single_model_predictions(self, model, X: np.ndarray, game_type: str, n_predictions: int = 5) -> List[Dict]:
-        """Generate predictions from a single model - FIXED VERSION."""
+        """Generate predictions from a single model."""
         try:
             predictions = []
             
-            # CORRECCIÓN DEFINITIVA: Obtener nombre del modelo de forma robusta
-            model_name = 'unknown'
+            # CORRECCIÓN: Obtener nombre del modelo correctamente
+            model_name = getattr(model, 'trained_model_name', 
+                         getattr(model, 'model_name', 
+                         getattr(model, 'name', 'unknown')))
             
-            # 1. Intentar obtener de atributos específicos
-            if hasattr(model, 'name'):
-                model_name = str(model.name)
-            elif hasattr(model, 'model_name'):
-                model_name = str(model.model_name)
-            elif hasattr(model, 'trained_model_name'):
-                model_name = str(model.trained_model_name)
+            # Verificar si el modelo tiene metadata con el nombre
+            if hasattr(model, 'metadata') and hasattr(model.metadata, 'name'):
+                model_name = model.metadata.name
             
-            # 2. Si aún es unknown, usar el nombre de la clase
-            if model_name == 'unknown':
-                class_name = model.__class__.__name__.lower()
-                
-                # Mapeo específico de clases a nombres
-                class_to_name = {
-                    'frequencyanalysismodel': 'frequencyanalysis',
-                    'randomforestmodel': 'randomforest',
-                    'montecarlomodel': 'montecarlo',
-                    'bayesianmodel': 'bayesian',
-                    'lightgbmmodel': 'lightgbm',
-                    'xgboostmodel': 'xgboost',
-                    'realrandomforestmodel': 'realrandomforest',
-                    'realxgboostmodel': 'realxgboost',
-                    'reallightgbmmodel': 'reallightgbm',
-                    'neuralnetworkmodel': 'neuralnetwork'
-                }
-                
-                model_name = class_to_name.get(class_name, class_name.replace('model', ''))
-            
-            logger.info(f"[PREDICT-MODEL] Using model: {model_name} (class: {model.__class__.__name__})")
+            logger.info(f"[PREDICT-MODEL] Generating predictions with model: {model_name}")
             
             # Get probability predictions
             probabilities = model.predict_proba(X)
@@ -615,7 +541,7 @@ class OptimizedPredictorEngine:
                             'numbers': numbers,
                             'probability': float(probs[idx]),
                             'confidence': self._get_model_confidence(model, probabilities),
-                            'model': model_name  # CORRECCIÓN: Usar el nombre obtenido correctamente
+                            'model': model_name  # CORRECCIÓN: Usar model_name obtenido correctamente
                         }
                         
                         predictions.append(prediction_dict)
@@ -626,6 +552,7 @@ class OptimizedPredictorEngine:
         except Exception as e:
             logger.error(f"[PREDICT-MODEL] Model prediction generation failed: {e}")
             return []
+    
     def _get_model_confidence(self, model, probabilities) -> float:
         """Calculate model confidence score."""
         try:
