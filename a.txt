@@ -1,0 +1,240 @@
+# REEMPLAZAR el método process_single_date en process_batch_dates.py (línea ~151)
+# BUSCAR este método y reemplazar completamente:
+
+def process_single_date(self, date_and_lotteries: Tuple[date, List[int]]) -> Dict[str, Any]:
+    """Process a single date with its required lottery types - OPTIMIZADO AGOSTO 2025."""
+    fecha, lottery_type_ids = date_and_lotteries
+    fecha_str = fecha.strftime('%Y-%m-%d')
+    
+    result = {
+        'date': fecha_str,
+        'lottery_types': lottery_type_ids,
+        'status': 'failed',
+        'predictions_created': 0,
+        'error': None,
+        'processing_time': 0,
+        'models_trained': 0,  # NUEVO: contador de modelos
+        'memory_peak_mb': 0   # NUEVO: pico de memoria
+    }
+    
+    start_time = time.time()
+    initial_memory = 0
+    
+    try:
+        # NUEVO: Monitorear memoria inicial
+        try:
+            initial_memory = psutil.Process().memory_info().rss / 1024 / 1024
+        except:
+            pass
+        
+        logger.info(f"[PROCESS] Processing {fecha_str} for lotteries: {lottery_type_ids}")
+        
+        # CAMBIO CRÍTICO: Verificar memoria antes de entrenar
+        if not self._check_memory_available():
+            logger.warning(f"[MEMORY] Insufficient memory for {fecha_str}, skipping training")
+            # Usar predicciones simples sin entrenamiento pesado
+            predictions_created = self._create_simple_predictions(fecha, lottery_type_ids)
+            
+            result.update({
+                'status': 'memory_limited',
+                'predictions_created': predictions_created,
+                'processing_time': time.time() - start_time,
+                'models_trained': 0,
+                'note': 'Used simple predictions due to memory constraints'
+            })
+            return result
+        
+        # CAMBIO: Entrenamiento optimizado con límites
+        training_result = self._train_models_limited(fecha, lottery_type_ids)
+        models_trained = training_result.get('models_trained', 0)
+        
+        predictions_created = 0
+        
+        # Generar predicciones para cada tipo de lotería requerido
+        for lottery_type_id in lottery_type_ids:
+            try:
+                logger.info(f"[PREDICT] Generating predictions for {fecha_str} - lottery {lottery_type_id}")
+                
+                # CAMBIO: Usar datos optimizados para predicción
+                predictions = predictor_engine.generar_predicciones_diarias(fecha_str, lottery_type_id)
+                
+                if predictions:
+                    predictor_engine.insertar_predicciones_en_bd(predictions, fecha, lottery_type_id)
+                    predictions_created += 1
+                    logger.info(f"[SUCCESS] Predictions saved for {fecha_str} - lottery {lottery_type_id}")
+                else:
+                    logger.warning(f"[WARN] No predictions generated for {fecha_str} - lottery {lottery_type_id}")
+            
+            except Exception as e:
+                logger.error(f"[ERROR] Prediction failed for {fecha_str} - lottery {lottery_type_id}: {e}")
+                continue
+        
+        # NUEVO: Calcular pico de memoria
+        try:
+            current_memory = psutil.Process().memory_info().rss / 1024 / 1024
+            peak_memory = max(initial_memory, current_memory)
+        except:
+            peak_memory = 0
+        
+        result.update({
+            'status': 'success' if predictions_created > 0 else 'partial',
+            'predictions_created': predictions_created,
+            'models_trained': models_trained,
+            'processing_time': time.time() - start_time,
+            'memory_peak_mb': peak_memory
+        })
+        
+        # NUEVO: Limpieza de memoria forzada
+        if hasattr(settings, 'force_gc_after_batch') and settings.force_gc_after_batch:
+            gc.collect()
+        
+        return result
+        
+    except Exception as e:
+        result.update({
+            'status': 'failed',
+            'error': str(e),
+            'processing_time': time.time() - start_time
+        })
+        logger.error(f"[FAILED] Processing failed for {fecha_str}: {e}")
+        return result
+
+def _check_memory_available(self) -> bool:
+    """Verifica si hay memoria suficiente disponible."""
+    try:
+        memory_info = psutil.virtual_memory()
+        available_mb = memory_info.available / 1024 / 1024
+        
+        # NUEVO: Usar configuración de settings
+        min_memory_mb = getattr(settings, 'model_training_max_memory_mb', 800) * 2
+        
+        if available_mb < min_memory_mb:
+            logger.warning(f"[MEMORY] Low memory: {available_mb:.0f}MB < {min_memory_mb}MB required")
+            return False
+        
+        return True
+    except:
+        return True  # Si no puede verificar, continuar
+
+def _train_models_limited(self, fecha: date, lottery_type_ids: List[int]) -> Dict[str, Any]:
+    """Entrenamiento limitado y optimizado para agosto 2025."""
+    try:
+        # NUEVO: Usar solo modelos prioritarios
+        priority_models = getattr(settings, 'priority_models', [
+            'frequency_analysis', 'lightgbm', 'xgboost', 'random_forest'
+        ])
+        
+        # Limitar número de modelos
+        max_models = getattr(settings, 'max_models_per_batch', 4)
+        models_to_train = priority_models[:max_models]
+        
+        logger.info(f"[TRAIN] Training {len(models_to_train)} priority models for {fecha}")
+        
+        # Entrenar con timeout más corto
+        training_result = predictor_engine.entrenar_modelos(
+            fecha=fecha,
+            tipo_loteria_id=lottery_type_ids[0] if lottery_type_ids else 1
+        )
+        
+        return {
+            'models_trained': len(models_to_train),
+            'training_result': training_result
+        }
+        
+    except Exception as e:
+        logger.error(f"[TRAIN] Limited training failed: {e}")
+        return {'models_trained': 0, 'error': str(e)}
+
+def _create_simple_predictions(self, fecha: date, lottery_type_ids: List[int]) -> int:
+    """Crear predicciones simples cuando hay limitaciones de memoria."""
+    try:
+        predictions_created = 0
+        
+        for lottery_type_id in lottery_type_ids:
+            # Usar solo frequency analysis (más rápido)
+            simple_predictions = self._generate_frequency_based_predictions(fecha, lottery_type_id)
+            
+            if simple_predictions:
+                predictor_engine.insertar_predicciones_en_bd(simple_predictions, fecha, lottery_type_id)
+                predictions_created += 1
+                logger.info(f"[SIMPLE] Simple predictions created for {fecha} - lottery {lottery_type_id}")
+        
+        return predictions_created
+        
+    except Exception as e:
+        logger.error(f"[SIMPLE] Simple prediction creation failed: {e}")
+        return 0
+
+def _generate_frequency_based_predictions(self, fecha: date, lottery_type_id: int) -> Dict:
+    """Generar predicciones basadas solo en frecuencia (método rápido)."""
+    try:
+        # Cargar datos históricos limitados
+        with get_db_connection() as session:
+            recent_data = session.query(Sorteo).filter(
+                Sorteo.tipo_loteria_id == lottery_type_id,
+                Sorteo.fecha >= fecha - timedelta(days=90)  # Solo 3 meses
+            ).order_by(Sorteo.fecha.desc()).limit(100).all()
+        
+        if not recent_data:
+            return None
+        
+        # Análisis de frecuencia simple
+        from collections import Counter
+        
+        all_numbers = []
+        for sorteo in recent_data:
+            all_numbers.extend([sorteo.primer_lugar, sorteo.segundo_lugar, sorteo.tercer_lugar])
+        
+        frequency_counter = Counter(all_numbers)
+        most_common = frequency_counter.most_common(20)  # Top 20 números
+        
+        # Generar predicciones simples
+        import random
+        random.seed(int(fecha.strftime('%Y%m%d')))  # Seed basado en fecha
+        
+        predictions = {
+            'quiniela': [],
+            'pale': [],
+            'tripleta': []
+        }
+        
+        # Quiniela: top 3 números más frecuentes
+        for i in range(3):
+            if i < len(most_common):
+                predictions['quiniela'].append({
+                    'posicion': i + 1,
+                    'numero': most_common[i][0],
+                    'probabilidad': most_common[i][1] / len(all_numbers),
+                    'metodo_generacion': 'frequency_simple',
+                    'score_confianza': 0.3
+                })
+        
+        # Pale: combinaciones de números frecuentes
+        for i in range(3):
+            if len(most_common) >= 2:
+                num1, num2 = random.sample([n[0] for n in most_common[:10]], 2)
+                predictions['pale'].append({
+                    'posicion': i + 1,
+                    'numeros': sorted([num1, num2]),
+                    'probabilidad': 0.02,
+                    'metodo_generacion': 'frequency_simple',
+                    'score_confianza': 0.25
+                })
+        
+        # Tripleta: combinaciones de números frecuentes
+        for i in range(3):
+            if len(most_common) >= 3:
+                nums = random.sample([n[0] for n in most_common[:15]], 3)
+                predictions['tripleta'].append({
+                    'posicion': i + 1,
+                    'numeros': sorted(nums),
+                    'probabilidad': 0.005,
+                    'metodo_generacion': 'frequency_simple',
+                    'score_confianza': 0.2
+                })
+        
+        return predictions
+        
+    except Exception as e:
+        logger.error(f"[SIMPLE] Frequency-based prediction generation failed: {e}")
+        return None

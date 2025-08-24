@@ -1,0 +1,29 @@
+# Carpetas de datos
+postgres_data/
+pgadmin_data/
+redis_data/
+models_cache/
+
+logs/
+exports/
+data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos de entorno
+
+
+# Archivos de respaldo
+*.backup.*
+*.pkl
+
+# Archivos de base de datos
+
+
+# Archivos del sistema / editor
+.DS_Store
+.vscode/
+.idea/

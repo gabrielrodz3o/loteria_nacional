@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  postgres_loteria:
+    container_name: postgres_loteria
+    image: pgvector/pgvector:pg15
+    restart: always
+    networks:
+      - loteria-network
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=loteria_db
+      - POSTGRES_USER=loteria_user
+      - POSTGRES_PASSWORD=LoteriaPass2024!
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loteria_user -d loteria_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  pgadmin_loteria:
+    container_name: pgadmin_loteria
+    image: dpage/pgadmin4:8.5
+    restart: always
+    networks:
+      - loteria-network
+    ports:
+      - "5051:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@loteria.com
+      - PGADMIN_DEFAULT_PASSWORD=LoteriaAdmin2024!
+      - PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION=False
+      - PGADMIN_LISTEN_PORT=80
+    depends_on:
+      postgres_loteria:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  redis_loteria:
+    container_name: redis_loteria
+    image: redis:7-alpine
+    restart: always
+    networks:
+      - loteria-network
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass LoteriaRedis2024!
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "LoteriaRedis2024!", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  loteria_app:
+    container_name: loteria_app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    networks:
+      - loteria-network
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://loteria_user:LoteriaPass2024!@postgres_loteria:5432/loteria_db
+      - REDIS_URL=redis://:LoteriaRedis2024!@redis_loteria:6379/0
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+      - SELENIUM_ENABLED=true
+      - SELENIUM_HEADLESS=true
+      - ENABLE_SCHEDULER=true
+      - TZ=America/Santo_Domingo
+    volumes:
+      - ./models_cache:/app/models_cache
+      - ./logs:/app/logs
+      - ./data:/app/data
+    depends_on:
+      postgres_loteria:
+        condition: service_healthy
+      redis_loteria:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  redis_data:
+
+networks:
+  loteria-network:
+    driver: bridge
